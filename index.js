@@ -1,64 +1,52 @@
-export default {
-  async fetch(request, env, ctx) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "*",
-        }
-      });
-    }
+const url = require('url');
 
-    const url = new URL(request.url);
-    let pathname = url.pathname;
+module.exports = async (request, response) => {
+  // Setel Header CORS agar bisa diakses dari Chub AI / SillyTavern
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.setHeader('Access-Control-Allow-Headers', '*');
 
-    // Memastikan endpoint mengarah ke v1beta OpenAI milik Google
-    if (pathname.includes("/chat/completions")) {
-      pathname = "/v1beta/openai/chat/completions";
-    }
+  if (request.method === 'OPTIONS') {
+    return response.status(200).end();
+  }
 
-    const targetUrl = "https://generativelanguage.googleapis.com" + pathname + url.search;
+  // Ambil jalur URL asli
+  let pathname = request.url;
+  if (pathname.includes("/chat/completions")) {
+    pathname = "/v1beta/openai/chat/completions";
+  } else if (!pathname.startsWith("/v1beta")) {
+    pathname = "/v1beta/openai" + pathname;
+  }
 
-    let requestInit = {
-      method: request.method,
-      headers: new Headers(request.headers),
-    };
+  const targetUrl = "https://generativelanguage.googleapis.com" + pathname;
 
-    // Proses penyaringan parameter agar tidak eror 400 di Google
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      let bodyText = await request.text();
-      try {
-        let bodyJson = JSON.parse(bodyText);
-        
-        // Hapus parameter OpenAI yang tidak didukung Google Gemini
-        delete bodyJson.frequency_penalty;
-        delete bodyJson.repetition_penalty;
-        delete bodyJson.presence_penalty;
-        delete bodyJson.top_k;
-        
-        requestInit.body = JSON.stringify(bodyJson);
-        requestInit.headers.delete("content-length");
-      } catch (e) {
-        requestInit.body = bodyText; 
-      }
-    }
-
+  // Saring parameter OpenAI yang dibenci Google Gemini
+  let modifiedBody = null;
+  if (request.method !== 'GET' && request.method !== 'HEAD' && request.body) {
     try {
-      const response = await fetch(targetUrl, requestInit);
-      const newHeaders = new Headers(response.headers);
-      newHeaders.set("Access-Control-Allow-Origin", "*");
-
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: newHeaders
-      });
+      let bodyJson = typeof request.body === 'string' ? JSON.parse(request.body) : request.body;
+      
+      delete bodyJson.frequency_penalty;
+      delete bodyJson.repetition_penalty;
+      delete bodyJson.presence_penalty;
+      delete bodyJson.top_k;
+      
+      modifiedBody = JSON.stringify(bodyJson);
     } catch (e) {
-      return new Response("Error Proxy: " + e.message, {
-        status: 500,
-        headers: { "Access-Control-Allow-Origin": "*" }
-      });
+      modifiedBody = JSON.stringify(request.body);
     }
+  }
+
+  try {
+    const fetchResponse = await fetch(targetUrl, {
+      method: request.method,
+      headers: request.headers,
+      body: modifiedBody
+    });
+
+    const data = await fetchResponse.text();
+    return response.status(fetchResponse.status).send(data);
+  } catch (error) {
+    return response.status(500).send("Error Proxy Vercel: " + error.message);
   }
 };
